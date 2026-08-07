@@ -24,8 +24,9 @@ python3 -m scripts.hei_kline_viewer.server \
 ## Docker 运行
 
 ```bash
-docker compose run --rm -p 8765:8765 -v "${PWD}:/freqtrade" \
-  --entrypoint python freqtrade \
+docker run --rm -p 127.0.0.1:8765:8765 \
+  -v "${PWD}:/freqtrade" -w /freqtrade \
+  --entrypoint python freqtradeorg/freqtrade:stable \
   -m scripts.hei_kline_viewer.server --host 0.0.0.0 --port 8765
 ```
 
