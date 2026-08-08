@@ -31,6 +31,8 @@ def test_page_exposes_all_requested_timeframes_and_ohlcv() -> None:
         assert f'data-timeframe="{timeframe}"' in html
     for field in ("O", "H", "L", "C", "V"):
         assert f'data-field="{field}"' in html
+    for symbol in ("HEI", "XRP"):
+        assert f'data-symbol="{symbol}"' in html
 
 
 def test_page_defaults_to_readable_candle_window() -> None:
@@ -48,3 +50,15 @@ def test_page_has_loading_error_and_library_failure_states() -> None:
     assert "正在加载更早数据" in html
     assert "加载失败" in html
     assert "图表组件加载失败" in html
+
+
+def test_page_draws_bollinger_bands_and_exposes_candle_range() -> None:
+    html = render_page()
+
+    assert "bbUpperSeries" in html
+    assert "bbMiddleSeries" in html
+    assert "bbLowerSeries" in html
+    assert "bb_upper" in html
+    assert "bb_width_pct" in html
+    assert 'data-field="R"' in html
+    assert 'data-field="RP"' in html

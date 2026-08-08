@@ -62,6 +62,7 @@ PAGE = r"""<!doctype html>
     }
     .symbol strong { font-size: 16px; font-weight: 600; }
     .contract { color: var(--muted); font-size: 12px; }
+    .symbols { display: flex; gap: 3px; }
     .timeframes { display: flex; gap: 3px; }
     button {
       appearance: none;
@@ -136,7 +137,11 @@ PAGE = r"""<!doctype html>
 <body>
   <main class="app">
     <header class="toolbar">
-      <div class="symbol"><strong>HEI / USDT</strong><span class="contract">永续合约 · Binance</span></div>
+      <div class="symbol"><strong id="symbol-label">HEI / USDT</strong><span class="contract">永续合约 · Binance</span></div>
+      <nav class="symbols" aria-label="交易品种">
+        <button type="button" class="active" data-symbol="HEI">HEI</button>
+        <button type="button" data-symbol="XRP">XRP</button>
+      </nav>
       <nav class="timeframes" aria-label="K线周期">
         <button type="button" data-timeframe="1m">1m</button>
         <button type="button" class="active" data-timeframe="15m">15m</button>
@@ -154,10 +159,13 @@ PAGE = r"""<!doctype html>
       <span>L <b data-field="L">--</b></span>
       <span>C <b data-field="C">--</b></span>
       <span>V <b data-field="V">--</b></span>
+      <span>振幅 <b data-field="R">--</b></span>
+      <span>振幅% <b data-field="RP">--</b></span>
+      <span>BB宽 <b data-field="BBW">--</b></span>
       <span class="range" id="loaded-range">尚未加载</span>
     </section>
     <section class="chart-shell">
-      <div id="chart" role="img" aria-label="HEI USDT 可拖动、可缩放的蜡烛图和成交量图"></div>
+      <div id="chart" role="img" aria-label="HEI USDT 可拖动、可缩放的蜡烛图、布林带和成交量图"></div>
       <div id="chart-status" role="status" aria-live="polite"></div>
       <div class="hint">拖动查看历史 · 滚轮缩放 · 拖动时间轴或价格轴调整比例</div>
     </section>
@@ -176,6 +184,7 @@ PAGE = r"""<!doctype html>
       Array.from(document.querySelectorAll('[data-field]')).map((element) => [element.dataset.field, element])
     );
     let state = {
+      symbol: 'HEI',
       timeframe: '15m',
       candles: [],
       loading: false,
@@ -250,6 +259,27 @@ PAGE = r"""<!doctype html>
       lastValueVisible: false,
       priceLineVisible: false,
     });
+    const bbUpperSeries = chart.addLineSeries({
+      color: '#42a5f5',
+      lineWidth: 1,
+      title: 'BB上轨',
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+    const bbMiddleSeries = chart.addLineSeries({
+      color: '#fbc02d',
+      lineWidth: 1,
+      title: 'BB中轨',
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+    const bbLowerSeries = chart.addLineSeries({
+      color: '#42a5f5',
+      lineWidth: 1,
+      title: 'BB下轨',
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
     chart.priceScale('').applyOptions({ scaleMargins: { top: 0.80, bottom: 0 } });
     candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0.24 } });
 
@@ -280,8 +310,8 @@ PAGE = r"""<!doctype html>
       return new Intl.DateTimeFormat('zh-CN', options).format(new Date(Number(unixSeconds) * 1000));
     }
 
-    async function requestCandles(timeframe, before, limit) {
-      const parameters = new URLSearchParams({ timeframe, limit: String(limit) });
+    async function requestCandles(symbol, timeframe, before, limit) {
+      const parameters = new URLSearchParams({ symbol, timeframe, limit: String(limit) });
       if (before !== null) parameters.set('before', String(before));
       const response = await fetch(`/api/candles?${parameters}`, { cache: 'no-store' });
       const payload = await response.json();
@@ -305,6 +335,18 @@ PAGE = r"""<!doctype html>
         value: volume,
         color: close >= open ? 'rgba(38, 166, 154, 0.38)' : 'rgba(239, 83, 80, 0.38)',
       })));
+      bbUpperSeries.setData(state.candles.filter(candle => candle.bb_upper !== null).map(candle => ({
+        time: candle.time,
+        value: candle.bb_upper,
+      })));
+      bbMiddleSeries.setData(state.candles.filter(candle => candle.bb_middle !== null).map(candle => ({
+        time: candle.time,
+        value: candle.bb_middle,
+      })));
+      bbLowerSeries.setData(state.candles.filter(candle => candle.bb_lower !== null).map(candle => ({
+        time: candle.time,
+        value: candle.bb_lower,
+      })));
       updateLoadedRange();
       updateOhlcv(state.candles[state.candles.length - 1] || null);
     }
@@ -327,6 +369,13 @@ PAGE = r"""<!doctype html>
       fields.L.textContent = formatPrice(candle.low);
       fields.C.textContent = formatPrice(candle.close);
       fields.V.textContent = formatVolume(volumeValue === null ? candle.volume : volumeValue);
+      fields.R.textContent = formatPrice(candle.range);
+      fields.RP.textContent = Number.isFinite(Number(candle.range_pct))
+        ? `${Number(candle.range_pct).toFixed(2)}%`
+        : '--';
+      fields.BBW.textContent = Number.isFinite(Number(candle.bb_width_pct))
+        ? `${Number(candle.bb_width_pct).toFixed(2)}%`
+        : '--';
       const directionColor = candle.close >= candle.open ? upColor : downColor;
       for (const field of ['O', 'H', 'L', 'C']) fields[field].style.color = directionColor;
     }
@@ -337,15 +386,29 @@ PAGE = r"""<!doctype html>
       }
     }
 
-    async function loadInitial(timeframe) {
+    function setActiveSymbol(symbol) {
+      for (const button of document.querySelectorAll('[data-symbol]')) {
+        button.classList.toggle('active', button.dataset.symbol === symbol);
+      }
+      document.getElementById('symbol-label').textContent = `${symbol} / USDT`;
+      document.getElementById('chart').setAttribute(
+        'aria-label', `${symbol} USDT 可拖动、可缩放的蜡烛图、布林带和成交量图`
+      );
+    }
+
+    async function loadInitial(symbol, timeframe) {
       const generation = state.generation + 1;
-      state = { timeframe, candles: [], loading: true, hasMore: true, generation };
+      state = { symbol, timeframe, candles: [], loading: true, hasMore: true, generation };
+      setActiveSymbol(symbol);
       setActiveTimeframe(timeframe);
-      showStatus(`正在加载 ${timeframe} 数据`, true);
+      showStatus(`正在加载 ${symbol} ${timeframe} 数据`, true);
       candleSeries.setData([]);
       volumeSeries.setData([]);
+      bbUpperSeries.setData([]);
+      bbMiddleSeries.setData([]);
+      bbLowerSeries.setData([]);
       try {
-        const payload = await requestCandles(timeframe, null, INITIAL_LIMIT);
+        const payload = await requestCandles(symbol, timeframe, null, INITIAL_LIMIT);
         if (generation !== state.generation) return;
         state.candles = payload.candles;
         state.hasMore = payload.has_more;
@@ -366,12 +429,13 @@ PAGE = r"""<!doctype html>
     async function loadOlder() {
       if (state.loading || !state.hasMore || state.candles.length === 0) return;
       const generation = state.generation;
+      const symbol = state.symbol;
       const timeframe = state.timeframe;
       const before = state.candles[0].time;
       state.loading = true;
       showStatus('正在加载更早数据', true);
       try {
-        const payload = await requestCandles(timeframe, before, PAGE_LIMIT);
+        const payload = await requestCandles(symbol, timeframe, before, PAGE_LIMIT);
         if (generation !== state.generation) return;
         const oldRange = chart.timeScale().getVisibleLogicalRange();
         const merged = mergeCandles(payload.candles, state.candles);
@@ -405,15 +469,18 @@ PAGE = r"""<!doctype html>
       updateOhlcv(candle, volume ? volume.value : null);
     });
 
+    for (const button of document.querySelectorAll('[data-symbol]')) {
+      button.addEventListener('click', () => loadInitial(button.dataset.symbol, state.timeframe));
+    }
     for (const button of document.querySelectorAll('[data-timeframe]')) {
-      button.addEventListener('click', () => loadInitial(button.dataset.timeframe));
+      button.addEventListener('click', () => loadInitial(state.symbol, button.dataset.timeframe));
     }
     document.getElementById('latest').addEventListener('click', () => {
       chart.timeScale().scrollToRealTime();
       updateOhlcv(state.candles[state.candles.length - 1] || null);
     });
 
-    loadInitial('15m');
+    loadInitial('HEI', '15m');
   </script>
 </body>
 </html>

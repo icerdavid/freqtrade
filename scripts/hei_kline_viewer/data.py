@@ -6,17 +6,38 @@ from typing import Mapping
 import pandas as pd
 
 
-TIMEFRAME_FILES = {
-    "1m": "HEI_USDT_USDT-1m-futures.feather",
-    "15m": "HEI_USDT_USDT-15m-futures.feather",
-    "1h": "HEI_USDT_USDT-1h-futures.feather",
-    "2h": "HEI_USDT_USDT-2h-futures.feather",
-    "4h": "HEI_USDT_USDT-4h-futures.feather",
-    "1d": "HEI_USDT_USDT-1d-futures.feather",
+SYMBOL_FILES = {
+    "HEI": {
+        "1m": "HEI_USDT_USDT-1m-futures.feather",
+        "15m": "HEI_USDT_USDT-15m-futures.feather",
+        "1h": "HEI_USDT_USDT-1h-futures.feather",
+        "2h": "HEI_USDT_USDT-2h-futures.feather",
+        "4h": "HEI_USDT_USDT-4h-futures.feather",
+        "1d": "HEI_USDT_USDT-1d-futures.feather",
+    },
+    "XRP": {
+        "1m": "XRP_USDT_USDT-1m-futures.feather",
+        "15m": "XRP_USDT_USDT-15m-futures.feather",
+        "1h": "XRP_USDT_USDT-1h-futures.feather",
+        "2h": "XRP_USDT_USDT-2h-futures.feather",
+        "4h": "XRP_USDT_USDT-4h-futures.feather",
+        "1d": "XRP_USDT_USDT-1d-futures.feather",
+    },
 }
+
+# Backwards-compatible alias for callers that only operate on HEI.
+TIMEFRAME_FILES = SYMBOL_FILES["HEI"]
 
 REQUIRED_COLUMNS = ("date", "open", "high", "low", "close", "volume")
 NUMERIC_COLUMNS = ("open", "high", "low", "close", "volume")
+DERIVED_COLUMNS = (
+    "range",
+    "range_pct",
+    "bb_middle",
+    "bb_upper",
+    "bb_lower",
+    "bb_width_pct",
+)
 
 
 class QueryError(ValueError):
@@ -52,13 +73,32 @@ class CandleStore:
         frame = self._load(timeframe)
         eligible = frame if before is None else frame[frame["time"] < before]
         chunk = eligible.tail(limit)
-        candles = chunk[["time", *NUMERIC_COLUMNS]].to_dict("records")
+        candles = [
+            {
+                "time": int(row.time),
+                **{
+                    column: float(getattr(row, column))
+                    for column in NUMERIC_COLUMNS
+                },
+                **{
+                    column: self._optional_float(getattr(row, column))
+                    for column in DERIVED_COLUMNS
+                },
+            }
+            for row in chunk[["time", *NUMERIC_COLUMNS, *DERIVED_COLUMNS]].itertuples(
+                index=False
+            )
+        ]
 
         return {
             "timeframe": timeframe,
             "candles": candles,
             "has_more": len(eligible) > len(chunk),
         }
+
+    @staticmethod
+    def _optional_float(value: object) -> float | None:
+        return None if pd.isna(value) else float(value)
 
     def _load(self, timeframe: str) -> pd.DataFrame:
         cached = self._frames.get(timeframe)
@@ -92,5 +132,18 @@ class CandleStore:
             .sort_values("time", kind="stable")
             .reset_index(drop=True)
         )
+        frame["range"] = frame["high"] - frame["low"]
+        frame["range_pct"] = frame["range"].div(
+            frame["open"].abs().replace(0.0, float("nan"))
+        ).mul(100.0)
+
+        rolling = frame["close"].rolling(window=20, min_periods=20)
+        frame["bb_middle"] = rolling.mean()
+        deviation = rolling.std(ddof=0)
+        frame["bb_upper"] = frame["bb_middle"] + 2.0 * deviation
+        frame["bb_lower"] = frame["bb_middle"] - 2.0 * deviation
+        frame["bb_width_pct"] = frame["bb_upper"].sub(frame["bb_lower"]).div(
+            frame["bb_middle"].abs().replace(0.0, float("nan"))
+        ).mul(100.0)
         self._frames[timeframe] = frame
         return frame

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Mapping, Sequence
 from urllib.parse import parse_qs, urlparse
 
-from scripts.hei_kline_viewer.data import CandleStore, QueryError, TIMEFRAME_FILES
+from scripts.hei_kline_viewer.data import CandleStore, QueryError, SYMBOL_FILES
 from scripts.hei_kline_viewer.page import render_page
 
 
@@ -51,7 +51,15 @@ def parse_optional_int(parameters: Mapping[str, list[str]], name: str) -> int | 
         raise QueryError(f"{name} must be an integer") from exc
 
 
-def create_server(host: str, port: int, store: CandleStore) -> ThreadingHTTPServer:
+def create_server(
+    host: str,
+    port: int,
+    store: CandleStore,
+    *,
+    stores: Mapping[str, CandleStore] | None = None,
+) -> ThreadingHTTPServer:
+    symbol_stores = dict(stores or {"HEI": store})
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
@@ -68,10 +76,16 @@ def create_server(host: str, port: int, store: CandleStore) -> ThreadingHTTPServ
 
             try:
                 parameters = parse_qs(parsed.query, keep_blank_values=True)
+                symbol = parameters.get("symbol", ["HEI"])[0]
+                if symbol not in symbol_stores:
+                    raise QueryError(f"Unsupported symbol: {symbol}")
                 timeframe = require_single(parameters, "timeframe")
                 limit = parse_int(parameters, "limit", default=1500)
                 before = parse_optional_int(parameters, "before")
-                payload = store.query(timeframe, before=before, limit=limit)
+                payload = symbol_stores[symbol].query(
+                    timeframe, before=before, limit=limit
+                )
+                payload["symbol"] = symbol
             except QueryError as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
                 return
@@ -105,12 +119,13 @@ def create_server(host: str, port: int, store: CandleStore) -> ThreadingHTTPServ
 def validate_data_files(data_dir: Path) -> None:
     missing = [
         str(data_dir / filename)
-        for filename in TIMEFRAME_FILES.values()
+        for files in SYMBOL_FILES.values()
+        for filename in files.values()
         if not (data_dir / filename).is_file()
     ]
     if missing:
         formatted = "\n".join(f"  - {path}" for path in missing)
-        raise QueryError(f"Missing HEI candle files:\n{formatted}")
+        raise QueryError(f"Missing candle files:\n{formatted}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -134,8 +149,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     except QueryError as exc:
         raise SystemExit(str(exc)) from exc
 
-    store = CandleStore(data_dir)
-    server = create_server(arguments.host, arguments.port, store)
+    stores = {
+        symbol: CandleStore(data_dir, files)
+        for symbol, files in SYMBOL_FILES.items()
+    }
+    server = create_server(
+        arguments.host,
+        arguments.port,
+        stores["HEI"],
+        stores=stores,
+    )
     display_host = "127.0.0.1" if arguments.host in {"0.0.0.0", "::"} else arguments.host
     print(f"HEI Kline viewer: http://{display_host}:{server.server_port}", flush=True)
     try:

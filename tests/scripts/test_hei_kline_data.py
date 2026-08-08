@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from scripts.hei_kline_viewer.data import CandleStore, QueryError
+from scripts.hei_kline_viewer.data import CandleStore, QueryError, SYMBOL_FILES
 
 
 def write_test_feather(
@@ -86,3 +86,36 @@ def test_missing_feather_file_has_clear_error(tmp_path: Path) -> None:
 
     with pytest.raises(QueryError, match="Candle file not found"):
         store.query("15m")
+
+
+def test_bollinger_bands_and_candle_range_are_calculated_without_future_data(
+    tmp_path: Path,
+) -> None:
+    write_test_feather(tmp_path, rows=21)
+    store = CandleStore(tmp_path, {"15m": "hei-15m.feather"})
+
+    candles = store.query("15m", limit=21)["candles"]
+    candle = candles[-1]
+    closes = [float(index + 1.25) for index in range(1, 21)]
+    middle = sum(closes) / len(closes)
+    variance = sum((close - middle) ** 2 for close in closes) / len(closes)
+    deviation = variance**0.5
+
+    assert candle["range"] == pytest.approx(1.0)
+    assert candle["range_pct"] == pytest.approx(1.0 / 21.0 * 100.0)
+    assert candle["bb_middle"] == pytest.approx(middle)
+    assert candle["bb_upper"] == pytest.approx(middle + 2.0 * deviation)
+    assert candle["bb_lower"] == pytest.approx(middle - 2.0 * deviation)
+    assert candle["bb_width_pct"] == pytest.approx(
+        (4.0 * deviation / middle) * 100.0
+    )
+
+    first_candle = candles[0]
+    assert first_candle["bb_middle"] is None
+    assert first_candle["bb_upper"] is None
+    assert first_candle["bb_lower"] is None
+
+
+def test_xrp_symbol_uses_an_explicit_allowlisted_file_set() -> None:
+    assert "XRP" in SYMBOL_FILES
+    assert SYMBOL_FILES["XRP"]["15m"] == "XRP_USDT_USDT-15m-futures.feather"

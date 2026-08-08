@@ -28,8 +28,15 @@ def running_server(tmp_path: Path) -> Iterator[str]:
         }
     )
     frame.to_feather(tmp_path / "hei-15m.feather")
+    frame.to_feather(tmp_path / "xrp-15m.feather")
     store = CandleStore(tmp_path, {"15m": "hei-15m.feather"}, max_limit=5)
-    server = create_server("127.0.0.1", 0, store)
+    xrp_store = CandleStore(tmp_path, {"15m": "xrp-15m.feather"}, max_limit=5)
+    server = create_server(
+        "127.0.0.1",
+        0,
+        store,
+        stores={"HEI": store, "XRP": xrp_store},
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     host, port = server.server_address
@@ -70,9 +77,24 @@ def test_candle_endpoint_supports_exclusive_before(running_server: str) -> None:
         assert payload["has_more"] is False
 
 
+def test_candle_endpoint_selects_xrp_store_and_returns_derived_fields(
+    running_server: str,
+) -> None:
+    with urlopen(
+        f"{running_server}/api/candles?symbol=XRP&timeframe=15m&limit=1"
+    ) as response:
+        payload = json.load(response)
+
+        assert payload["symbol"] == "XRP"
+        assert payload["candles"][0]["time"] == 420
+        assert payload["candles"][0]["range"] == 1.0
+        assert payload["candles"][0]["bb_middle"] is None
+
+
 @pytest.mark.parametrize(
     "query, message",
     [
+        ("symbol=NOPE&timeframe=15m&limit=2", "Unsupported symbol"),
         ("timeframe=../secret&limit=2", "Unsupported timeframe"),
         ("timeframe=15m&limit=invalid", "limit must be an integer"),
         ("timeframe=15m&before=invalid", "before must be an integer"),
