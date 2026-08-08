@@ -466,7 +466,10 @@ PAGE = r"""<!doctype html>
       const candle = parameter.seriesData.get(candleSeries);
       if (!candle) return;
       const volume = parameter.seriesData.get(volumeSeries);
-      updateOhlcv(candle, volume ? volume.value : null);
+      // The candlestick series only receives OHLC fields. Merge in the
+      // derived fields from the API response before updating the readout.
+      const detailedCandle = state.candles.find(item => item.time === candle.time) || candle;
+      updateOhlcv(detailedCandle, volume ? volume.value : null);
     });
 
     for (const button of document.querySelectorAll('[data-symbol]')) {

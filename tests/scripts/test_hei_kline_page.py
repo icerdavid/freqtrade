@@ -62,3 +62,4 @@ def test_page_draws_bollinger_bands_and_exposes_candle_range() -> None:
     assert "bb_width_pct" in html
     assert 'data-field="R"' in html
     assert 'data-field="RP"' in html
+    assert "state.candles.find(item => item.time === candle.time)" in html
